@@ -39,3 +39,35 @@ func (os *OS) Run() {
 
 	log.Info(field, "scheduler exit. Showdown OS")
 }
+
+// CreateProcess 创建一个进程，放到进程表里
+func (os *OS) CreateProcess(pid string, precedence uint, timeCost uint, runnable Runnable) {
+
+	// process
+	p := Process{
+		Id:         pid,
+		Precedence: precedence,
+		Devices:    map[string]*Device{},
+	}
+
+	// init mem
+	// give new process a var table
+	os.Mem = append(os.Mem, Object{
+		Pid:     pid,
+		Content: nil,
+	})
+
+	p.Memory = os.Mem[len(os.Mem)-1:]
+
+	// thread
+	p.Thread = &Thread{
+		runnable: runnable,
+		contextual: &Contextual{
+			Process: &p,
+		},
+		remainingTime: timeCost,
+	}
+
+	// append to Procs
+	os.Procs = append(os.Procs, p)
+}

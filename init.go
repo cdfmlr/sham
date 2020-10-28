@@ -8,4 +8,5 @@ func init() {
 	log.SetFormatter(&log.TextFormatter{
 		ForceColors: true,
 	})
+	log.SetLevel(log.TraceLevel)
 }
