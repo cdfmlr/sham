@@ -35,7 +35,7 @@ func (os *OS) Run() {
 
 	log.Info(field, "OS Run: start scheduler")
 	//fmt.Println("OS Run: start scheduler.")
-	os.Scheduler.schedule(&os.CPU, os.Procs)
+	os.Scheduler.schedule(&os.CPU, &os.Procs)
 
 	log.Info(field, "scheduler exit. Showdown OS")
 }

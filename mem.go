@@ -5,4 +5,7 @@ package sham
 type Memory []Object
 
 // Object 是「内存」中保存的「对象」，具体是啥都行。
-type Object interface{}
+type Object struct {
+	Pid     string
+	Content interface{}
+}

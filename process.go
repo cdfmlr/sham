@@ -46,7 +46,7 @@ type Process struct {
 	// Precedence 优先级，数字越大越优先
 	Precedence uint
 	Thread     *Thread
-	Memory     *Memory
+	Memory     Memory
 	Devices    map[string]*Device
 }
 
@@ -70,7 +70,7 @@ var Noop = Process{
 		contextual:    &Contextual{},
 		remainingTime: 0,
 	},
-	Memory:  &Memory{},
+	Memory:  Memory{},
 	Devices: map[string]*Device{},
 }
 
