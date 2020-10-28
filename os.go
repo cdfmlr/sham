@@ -40,6 +40,15 @@ func (os *OS) Run() {
 	log.Info(field, "scheduler exit. Showdown OS")
 }
 
+/********* 👇 SYSTEM CALLS 👇 ***************/
+
+// TODO: interrupt: a set of system-call-like stuffs
+
+// OSInterface 是操作系统暴露出来的「系统调用」接口
+type OSInterface interface {
+	CreateProcess(pid string, precedence uint, timeCost uint, runnable Runnable)
+}
+
 // CreateProcess 创建一个进程，放到进程表里
 func (os *OS) CreateProcess(pid string, precedence uint, timeCost uint, runnable Runnable) {
 
@@ -64,6 +73,7 @@ func (os *OS) CreateProcess(pid string, precedence uint, timeCost uint, runnable
 		runnable: runnable,
 		contextual: &Contextual{
 			Process: &p,
+			OS:      os,
 		},
 		remainingTime: timeCost,
 	}
@@ -71,3 +81,5 @@ func (os *OS) CreateProcess(pid string, precedence uint, timeCost uint, runnable
 	// append to Procs
 	os.Procs = append(os.Procs, p)
 }
+
+/********* 👆 SYSTEM CALLS 👆 ***************/

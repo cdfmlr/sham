@@ -50,11 +50,15 @@ type Process struct {
 	Devices    map[string]*Device
 }
 
+// TODO: Contextual.Commit: after a time_cost (an operation): remainingTime--, schedule.
+
 // Contextual 上下文：线程的上下文。
 // 其实就是包含一个指向 Process 的指针。
 // 后面还可以往这里加东西：用来保存各种值。
 type Contextual struct {
 	Process *Process
+	// 通过 Contextual.OS.XX 调系统调用
+	OS OSInterface
 }
 
 // Noop 是一个基本的进程，运行时会使用 fmt.Println 打印 "no-op"。

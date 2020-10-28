@@ -33,8 +33,8 @@ func TestFCFSScheduler(t *testing.T) {
 		// test create new process
 
 		log.WithField("OS.Procs", shamOS.Procs).Debug("before CreateProcess")
-		// A system call！
-		shamOS.CreateProcess("ProcessBar", 10, 0, func(contextual *Contextual) {
+		// A system call!
+		contextual.OS.CreateProcess("ProcessBar", 10, 0, func(contextual *Contextual) {
 			fmt.Println("From ProcessBar, a Process dynamic created by processFoo")
 		})
 		log.WithField("OS.Procs", shamOS.Procs).Debug("after CreateProcess")
