@@ -2,6 +2,8 @@ package sham
 
 import (
 	log "github.com/sirupsen/logrus"
+	"sync"
+	"time"
 )
 
 // OS 是模拟的「操作系统」，一个持有并管理 CPU，内存、IO 设备的东西。
@@ -11,8 +13,11 @@ type OS struct {
 	Mem  Memory
 	Devs map[string]Device
 
-	Procs     []Process
-	Scheduler Scheduler
+	ProcsMutex   sync.RWMutex
+	RunningProc  *Process
+	ReadyProcs   []*Process
+	BlockedProcs []*Process
+	Scheduler    Scheduler
 }
 
 // NewOS 构建一个「操作系统」。
@@ -20,24 +25,25 @@ type OS struct {
 // 包含一个 Noop 的进程表以及默认的 NoScheduler 调度器。
 func NewOS() *OS {
 	return &OS{
-		CPU:       CPU{},
-		Mem:       Memory{},
-		Devs:      map[string]Device{},
-		Procs:     []Process{Noop},
-		Scheduler: NoScheduler{},
+		CPU:          CPU{},
+		Mem:          Memory{},
+		Devs:         map[string]Device{},
+		ReadyProcs:   []*Process{&Noop},
+		BlockedProcs: []*Process{},
+		Scheduler:    NoScheduler{},
 	}
 }
 
-// Run 启动操作系统。即启动操作系统的调度器。
+// Boot 启动操作系统。即启动操作系统的调度器。
 // 调度器退出标志着操作系统的退出，也就是关机。
-func (os *OS) Run() {
+func (os *OS) Boot() {
 	field := "[OS] "
 
-	log.Info(field, "OS Run: start scheduler")
-	//fmt.Println("OS Run: start scheduler.")
-	os.Scheduler.schedule(&os.CPU, &os.Procs)
+	log.Info(field, "OS Boot: start scheduler")
 
-	log.Info(field, "scheduler exit. Showdown OS")
+	os.Scheduler.schedule(os)
+
+	log.Info(field, "No process to run. Showdown OS.")
 }
 
 /********* 👇 SYSTEM CALLS 👇 ***************/
@@ -47,6 +53,9 @@ func (os *OS) Run() {
 // OSInterface 是操作系统暴露出来的「系统调用」接口
 type OSInterface interface {
 	CreateProcess(pid string, precedence uint, timeCost uint, runnable Runnable)
+
+	// 这个只是模拟的内部需要，不是真正意义上的系统调用。
+	clockTick()
 }
 
 // CreateProcess 创建一个进程，放到进程表里
@@ -78,8 +87,101 @@ func (os *OS) CreateProcess(pid string, precedence uint, timeCost uint, runnable
 		remainingTime: timeCost,
 	}
 
-	// append to Procs
-	os.Procs = append(os.Procs, p)
+	// append to ReadyProcs
+	os.ReadyProcs = append(os.ReadyProcs, &p)
+}
+
+func (os *OS) InterruptRequest(pid string) {
+
+}
+
+// clockTick 时钟增长
+// 这里模拟需要，所以是软的实现，而不是真的"硬件"时钟。
+func (os *OS) clockTick() {
+	os.CPU.Clock += 1
+	time.Sleep(time.Second)
+	if os.CPU.Clock%10 == 0 { // 时钟中断
+		// TODO: 时钟中断
+		os.CPU.Clock = 0
+	}
 }
 
 /********* 👆 SYSTEM CALLS 👆 ***************/
+
+/********* 👇 进程状态转换 👇 ***************/
+
+// RunningToBlocked 阻塞当前运行的进程
+func (os *OS) RunningToBlocked() {
+	os.ProcsMutex.Lock()
+	defer os.ProcsMutex.Unlock()
+
+	log.WithField("process", os.RunningProc).Info("[OS] RunningToBlocked")
+	os.RunningProc.Status = StatusBlocked
+	os.BlockedProcs = append(os.BlockedProcs, os.RunningProc)
+}
+
+// RunningToReady 把当前运行的进程变成就绪，并释放 CPU
+func (os *OS) RunningToReady() {
+	os.ProcsMutex.Lock()
+	defer os.ProcsMutex.Unlock()
+
+	log.WithField("process", os.RunningProc).Info("[OS] RunningToReady")
+	os.RunningProc.Status = StatusReady
+	os.ReadyProcs = append(os.ReadyProcs, os.RunningProc)
+
+	os.CPU.Unlock()
+}
+
+// RunningToDone 把当前运行的进程标示成完成，并释放 CPU
+func (os *OS) RunningToDone() {
+	os.ProcsMutex.Lock()
+	defer os.ProcsMutex.Unlock()
+
+	log.WithField("process", os.RunningProc).Info("[OS] RunningToDone")
+	os.RunningProc.Status = StatusDone
+
+	os.CPU.Unlock()
+}
+
+// ReadyToRunning 把就绪队列中的 pid 进程变成运行状态呀
+// 这个方法会引导 CPU 切换运行进程，并锁上 CPU
+func (os *OS) ReadyToRunning(pid string) {
+	os.ProcsMutex.Lock()
+	defer os.ProcsMutex.Unlock()
+
+	key := -1
+	for i, p := range os.ReadyProcs {
+		if p.Id == pid {
+			key = i
+		}
+	}
+	log.WithField("process", os.ReadyProcs[key]).Info("[OS] ReadyToRunning")
+
+	os.ReadyProcs[key].Status = StatusRunning
+	os.RunningProc = os.ReadyProcs[key]
+	os.ReadyProcs = append(os.ReadyProcs[:key], os.ReadyProcs[key+1:]...) // 从就绪队列里删除
+
+	os.CPU.Lock()
+	os.CPU.Switch(os.RunningProc.Thread)
+}
+
+// BlockedToReady 把阻塞中的 pid 进程变为就绪状态
+func (os *OS) BlockedToReady(pid string) {
+	os.ProcsMutex.Lock()
+	defer os.ProcsMutex.Unlock()
+
+	key := -1
+	for i, p := range os.BlockedProcs {
+		if p.Id == pid {
+			key = i
+		}
+	}
+	log.WithField("process", os.BlockedProcs[key]).Info("[OS] BlockedToReady")
+
+	os.BlockedProcs[key].Status = StatusReady
+
+	os.ReadyProcs = append(os.ReadyProcs, os.BlockedProcs[key])                 // append BlockedProcs[key] into ReadyProcs
+	os.BlockedProcs = append(os.BlockedProcs[:key], os.BlockedProcs[key+1:]...) // Delete BlockedProcs[key]
+}
+
+/********* 👆 进程状态转换 👆 ***************/

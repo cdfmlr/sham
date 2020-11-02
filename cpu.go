@@ -13,8 +13,11 @@ type CPU struct {
 	sync.Mutex
 	Thread *Thread
 
-	Done   chan string
-	cancel context.CancelFunc
+	Done    chan int
+	Blocked chan string
+	cancel  context.CancelFunc
+
+	Clock uint
 }
 
 // Run 让 CPU 运行任务
