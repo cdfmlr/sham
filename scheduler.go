@@ -61,6 +61,9 @@ func (F FCFSScheduler) schedule(os *OS) {
 			default:
 				os.RunningToReady()
 			}
+
+			os.HandleInterrupts()
+
 			if len(os.ReadyProcs) > 0 {
 				F._schedule(os)
 			}

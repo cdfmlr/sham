@@ -29,15 +29,22 @@ func (t *Thread) Run() (done chan int, cancel context.CancelFunc) {
 	_ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		select {
-		case <-_ctx.Done():
-			fmt.Println("Done")
-			return
-		default:
-			ret := t.runnable(t.contextual)
-			t.contextual.Commit()
-			// ret: StatusDone | StatusBlocked
-			done <- ret
+		for { // 一条条代码不停跑，直到阻塞｜退出｜被取消
+			select {
+			case <-_ctx.Done():
+				log.WithField("process", t.contextual.Process).Info("Thread Run Cancel")
+				s := t.contextual.Process.Status
+				t.contextual.Process.Status = StatusRunning
+				done <- s
+				return
+			default:
+				ret := t.runnable(t.contextual)
+				t.contextual.Commit()
+				if ret != StatusRunning { // 结束了，交给调度器处理
+					done <- ret
+					return
+				}
+			}
 		}
 	}()
 

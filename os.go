@@ -18,6 +18,8 @@ type OS struct {
 	ReadyProcs   []*Process
 	BlockedProcs []*Process
 	Scheduler    Scheduler
+
+	Interrupts []Interrupt
 }
 
 // NewOS 构建一个「操作系统」。
@@ -31,6 +33,7 @@ func NewOS() *OS {
 		ReadyProcs:   []*Process{&Noop},
 		BlockedProcs: []*Process{},
 		Scheduler:    NoScheduler{},
+		Interrupts:   []Interrupt{},
 	}
 }
 
@@ -46,6 +49,26 @@ func (os *OS) Boot() {
 	log.Info(field, "No process to run. Showdown OS.")
 }
 
+// HandleInterrupts 处理中断队列中的中断
+func (os *OS) HandleInterrupts() {
+	var i Interrupt
+	for len(os.Interrupts) > 0 {
+		i, os.Interrupts = os.Interrupts[0], os.Interrupts[1:]
+
+		log.WithFields(log.Fields{
+			"type": i.Typ,
+			"data": i.Data,
+		}).Info("[OS] Handle Interrupt")
+
+		i.Handler(os, i.Data)
+		os.clockTick()
+	}
+}
+
+func HandleClockInterrupt(os *OS, data InterruptData) {
+	os.BlockedToReady(data.Pid)
+}
+
 /********* 👇 SYSTEM CALLS 👇 ***************/
 
 // TODO: interrupt: a set of system-call-like stuffs
@@ -53,6 +76,7 @@ func (os *OS) Boot() {
 // OSInterface 是操作系统暴露出来的「系统调用」接口
 type OSInterface interface {
 	CreateProcess(pid string, precedence uint, timeCost uint, runnable Runnable)
+	InterruptRequest(thread *Thread, typ string, data interface{})
 
 	// 这个只是模拟的内部需要，不是真正意义上的系统调用。
 	clockTick()
@@ -91,8 +115,15 @@ func (os *OS) CreateProcess(pid string, precedence uint, timeCost uint, runnable
 	os.ReadyProcs = append(os.ReadyProcs, &p)
 }
 
-func (os *OS) InterruptRequest(pid string) {
-
+func (os *OS) InterruptRequest(thread *Thread, typ string, data interface{}) {
+	log.WithFields(log.Fields{
+		"thread": thread,
+		"type":   typ,
+		"data":   data,
+	}).Info("[OS] InterruptRequest")
+	i := GetInterrupt(thread.contextual.Process.Id, typ, data)
+	os.Interrupts = append(os.Interrupts, i)
+	os.CPU.Cancel(StatusBlocked)
 }
 
 // clockTick 时钟增长
@@ -101,7 +132,7 @@ func (os *OS) clockTick() {
 	os.CPU.Clock += 1
 	time.Sleep(time.Second)
 	if os.CPU.Clock%10 == 0 { // 时钟中断
-		// TODO: 时钟中断
+		os.InterruptRequest(os.RunningProc.Thread, ClockInterrupt, os.RunningProc)
 		os.CPU.Clock = 0
 	}
 }
@@ -118,6 +149,8 @@ func (os *OS) RunningToBlocked() {
 	log.WithField("process", os.RunningProc).Info("[OS] RunningToBlocked")
 	os.RunningProc.Status = StatusBlocked
 	os.BlockedProcs = append(os.BlockedProcs, os.RunningProc)
+
+	os.CPU.Unlock()
 }
 
 // RunningToReady 把当前运行的进程变成就绪，并释放 CPU
@@ -162,6 +195,9 @@ func (os *OS) ReadyToRunning(pid string) {
 	os.ReadyProcs = append(os.ReadyProcs[:key], os.ReadyProcs[key+1:]...) // 从就绪队列里删除
 
 	os.CPU.Lock()
+
+	os.CPU.Clock = 0 // 重置时钟计数
+
 	os.CPU.Switch(os.RunningProc.Thread)
 }
 
@@ -175,6 +211,11 @@ func (os *OS) BlockedToReady(pid string) {
 		if p.Id == pid {
 			key = i
 		}
+	}
+
+	if key == -1 {
+		log.WithField("pid", pid).Info("[OS] BlockedToReady Failed: No such Blocked Process")
+		return
 	}
 	log.WithField("process", os.BlockedProcs[key]).Info("[OS] BlockedToReady")
 

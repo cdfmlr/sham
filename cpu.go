@@ -26,8 +26,11 @@ func (c *CPU) Run() {
 }
 
 // Cancel 取消 CPU 当前的任务
-func (c *CPU) Cancel() {
+func (c *CPU) Cancel(status int) {
 	if c.cancel != nil {
+		if c.Thread.contextual.Process.Status == StatusRunning {
+			c.Thread.contextual.Process.Status = status
+		}
 		c.cancel()
 	}
 	c.Thread = nil
@@ -37,7 +40,7 @@ func (c *CPU) Cancel() {
 
 // Switch 切换 CPU 任务
 func (c *CPU) Switch(newThread *Thread) {
-	c.Cancel()
+	c.Cancel(StatusReady)
 	c.Thread = newThread
 	c.Run()
 }

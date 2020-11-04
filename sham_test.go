@@ -49,6 +49,7 @@ func TestFCFSScheduler(t *testing.T) {
 	shamOS.Boot()
 }
 
+// A "fatal error: sync: unlock of unlocked mutex" expected
 func TestBlock(t *testing.T) {
 	shamOS := NewOS()
 	shamOS.Scheduler = FCFSScheduler{}
@@ -143,6 +144,102 @@ func TestReturnStatus(t *testing.T) {
 			return StatusDone
 		})
 		return StatusReady
+	})
+
+	shamOS.Boot()
+}
+
+func TestSeq(t *testing.T) {
+	shamOS := NewOS()
+	shamOS.Scheduler = FCFSScheduler{}
+
+	// 这是一个标准的顺序运行的进程
+	shamOS.CreateProcess("processSeq", 10, 1, func(contextual *Contextual) int {
+		mem := &contextual.Process.Memory[0]
+
+		switch contextual.PC {
+		case 0:
+			if mem.Content == nil {
+				mem.Content = map[string]uint{"count": 0}
+			}
+			log.Debug("Line 0")
+			return StatusRunning
+		case 1:
+			log.Debug("Line 1")
+			mem.Content.(map[string]uint)["count"] += 1
+			return StatusRunning
+		case 2:
+			log.Debug("Line 2")
+			mem.Content.(map[string]uint)["count"] += 1
+			return StatusRunning
+		case 3:
+			if mem.Content.(map[string]uint)["count"] == 2 {
+				fmt.Println("count == 2, exit")
+				return StatusDone
+			}
+		}
+		return StatusDone
+	})
+
+	shamOS.Boot()
+}
+
+func TestCancel(t *testing.T) {
+	shamOS := NewOS()
+	shamOS.Scheduler = FCFSScheduler{}
+
+	go func() {
+		time.Sleep(2 * time.Second)
+		shamOS.CPU.Cancel(StatusReady) // if StatusBlocked: all blocked， run noops
+	}()
+
+	shamOS.CreateProcess("processSeq", 10, 1, func(contextual *Contextual) int {
+		mem := &contextual.Process.Memory[0]
+
+		switch contextual.PC {
+		case 0:
+			if mem.Content == nil {
+				mem.Content = map[string]uint{"count": 0}
+			}
+			log.Debug("Line 0")
+			return StatusRunning
+		case 1:
+			log.Debug("Line 1")
+			mem.Content.(map[string]uint)["count"] += 1
+			return StatusRunning
+		case 2:
+			log.Debug("Line 2")
+			mem.Content.(map[string]uint)["count"] += 1
+			return StatusRunning
+		case 3:
+			if mem.Content.(map[string]uint)["count"] == 2 {
+				fmt.Println("count == 2, exit")
+				return StatusDone
+			}
+		}
+		return StatusDone
+	})
+
+	shamOS.Boot()
+}
+
+func TestClockInterrupt(t *testing.T) {
+	shamOS := NewOS()
+	shamOS.Scheduler = FCFSScheduler{}
+
+	shamOS.CreateProcess("processSeq", 10, 1, func(contextual *Contextual) int {
+		switch {
+		case contextual.PC < 30:
+			contextual.OS.CreateProcess(fmt.Sprintf("subprocess%d", contextual.PC), 10, 0, func(contextual *Contextual) int {
+				fmt.Println(contextual.Process.Id)
+				return StatusDone
+			})
+			log.WithField("PC", contextual.PC).Debug("processSeq continue")
+			return StatusRunning
+		case contextual.PC == 30:
+			log.WithField("PC", contextual.PC).Debug("processSeq exit")
+		}
+		return StatusDone
 	})
 
 	shamOS.Boot()
