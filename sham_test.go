@@ -49,49 +49,6 @@ func TestFCFSScheduler(t *testing.T) {
 	shamOS.Boot()
 }
 
-// A "fatal error: sync: unlock of unlocked mutex" expected
-func TestBlock(t *testing.T) {
-	shamOS := NewOS()
-	shamOS.Scheduler = FCFSScheduler{}
-	shamOS.ReadyProcs = []*Process{&Noop, &Noop}
-
-	log.WithField("OS.ReadyProcs", shamOS.ReadyProcs).Debug("before CreateProcess")
-	shamOS.CreateProcess("processFoo", 10, 1, func(contextual *Contextual) int {
-		for i := 0; i < 3; i++ {
-			fmt.Printf("%d From processFoo\n", i)
-			shamOS.RunningToBlocked()
-			log.WithField("BlockedProcs", shamOS.BlockedProcs).Debug("Blocked")
-			go func() {
-				time.Sleep(2 * time.Second)
-				shamOS.BlockedToReady("processFoo")
-			}()
-		}
-
-		// test use mem
-
-		log.WithField("OS.Mem", shamOS.Mem).Debug("before using mem")
-		mem := &contextual.Process.Memory[0]
-		if mem.Content == nil {
-			mem.Content = map[string]string{"hello": "world"}
-		}
-		log.WithField("OS.Mem", shamOS.Mem).Debug("after using mem")
-
-		// test create new process
-
-		log.WithField("OS.ReadyProcs", shamOS.ReadyProcs).Debug("before CreateProcess")
-		// A system call!
-		contextual.OS.CreateProcess("ProcessBar", 10, 0, func(contextual *Contextual) int {
-			fmt.Println("From ProcessBar, a Process dynamic created by processFoo")
-			return StatusDone
-		})
-		log.WithField("OS.ReadyProcs", shamOS.ReadyProcs).Debug("after CreateProcess")
-		return StatusDone
-	})
-	log.WithField("OS.ReadyProcs", shamOS.ReadyProcs).Debug("after CreateProcess")
-
-	shamOS.Boot()
-}
-
 func TestCommit(t *testing.T) {
 	shamOS := NewOS()
 	shamOS.Scheduler = FCFSScheduler{}
@@ -238,6 +195,157 @@ func TestClockInterrupt(t *testing.T) {
 			return StatusRunning
 		case contextual.PC == 30:
 			log.WithField("PC", contextual.PC).Debug("processSeq exit")
+		}
+		return StatusDone
+	})
+
+	shamOS.Boot()
+}
+
+func TestStdOut(t *testing.T) {
+	shamOS := NewOS()
+	shamOS.Scheduler = FCFSScheduler{}
+
+	shamOS.CreateProcess("processSeq", 10, 1, func(contextual *Contextual) int {
+		mem := &contextual.Process.Memory[0]
+		chanOutput := make(chan interface{}, 10)
+
+		switch contextual.PC {
+		case 0:
+			if mem.Content == nil {
+				mem.Content = map[string]uint{"count": 0}
+			}
+			log.Debug("Line 0")
+			chanOutput <- mem.Content.(map[string]uint)["count"]
+			contextual.OS.InterruptRequest(contextual.Process.Thread, StdOutInterrupt, chanOutput)
+			return StatusRunning
+		case 1:
+			log.Debug("Line 1")
+			mem.Content.(map[string]uint)["count"] += 1
+			chanOutput <- mem.Content.(map[string]uint)["count"]
+			contextual.OS.InterruptRequest(contextual.Process.Thread, StdOutInterrupt, chanOutput)
+			return StatusRunning
+		case 2:
+			log.Debug("Line 2")
+			mem.Content.(map[string]uint)["count"] += 1
+			chanOutput <- mem.Content.(map[string]uint)["count"]
+			contextual.OS.InterruptRequest(contextual.Process.Thread, StdOutInterrupt, chanOutput)
+			return StatusRunning
+		case 3:
+			if mem.Content.(map[string]uint)["count"] == 2 {
+				fmt.Println("By fmt.Println: count == 2, exit")
+				chanOutput <- "By StdOut: count == 2, exit"
+				contextual.OS.InterruptRequest(contextual.Process.Thread, StdOutInterrupt, chanOutput)
+				return StatusDone
+			}
+		}
+		return StatusDone
+	})
+
+	shamOS.Boot()
+}
+
+func TestHelloWorld(t *testing.T) {
+	shamOS := NewOS()
+	shamOS.Scheduler = FCFSScheduler{}
+
+	shamOS.ReadyProcs = []*Process{} // No Noop
+
+	shamOS.CreateProcess("processSeq", 10, 1, func(contextual *Contextual) int {
+
+		ch := make(chan interface{}, 1)
+		ch <- "Hello, world!"
+		contextual.OS.InterruptRequest(contextual.Process.Thread, StdOutInterrupt, ch)
+		return StatusDone
+	})
+
+	shamOS.Boot()
+}
+
+func TestStdIn(t *testing.T) {
+	shamOS := NewOS()
+	shamOS.Scheduler = FCFSScheduler{}
+
+	shamOS.ReadyProcs = []*Process{} // No Noop
+
+	shamOS.CreateProcess("processSeq_0", 10, 1, func(contextual *Contextual) int {
+		mem := &contextual.Process.Memory[0]
+
+		switch contextual.PC {
+		case 0:
+			in := make(chan interface{}, 1)
+			// in 会在多个周期中被使用，需要放入内存
+			mem.Content = map[string]chan interface{}{"in": in}
+
+			contextual.OS.InterruptRequest(contextual.Process.Thread, StdInInterrupt, in)
+			return StatusRunning
+		case 1:
+			in := mem.Content.(map[string]chan interface{})["in"]
+
+			log.Debug("to recv")
+			content := <-in
+			log.WithField("content", content).Debug("got content")
+			out := make(chan interface{}, 1)
+			out <- content
+			contextual.OS.InterruptRequest(contextual.Process.Thread, StdOutInterrupt, out)
+			return StatusDone
+		}
+
+		return StatusDone
+	})
+
+	shamOS.CreateProcess("processSeq_1", 10, 1, func(contextual *Contextual) int {
+		mem := &contextual.Process.Memory[0]
+
+		switch contextual.PC {
+		case 0:
+			in := make(chan interface{}, 2)
+			// in 会在多个周期中被使用，需要放入内存
+			mem.Content = map[string]chan interface{}{"in": in}
+
+			// 要求多个输入
+			contextual.OS.InterruptRequest(contextual.Process.Thread, StdInInterrupt, in)
+			contextual.OS.InterruptRequest(contextual.Process.Thread, StdInInterrupt, in)
+			return StatusRunning
+		case 1:
+			in := mem.Content.(map[string]chan interface{})["in"]
+
+			log.Debug("to recv")
+			content := (<-in).(string) + (<-in).(string)
+			log.WithField("content", content).Debug("got content")
+			out := make(chan interface{}, 1)
+			out <- content
+			contextual.OS.InterruptRequest(contextual.Process.Thread, StdOutInterrupt, out)
+			return StatusDone
+		}
+
+		return StatusDone
+	})
+
+	//shamOS.ReadyProcs = shamOS.ReadyProcs[:1]
+
+	shamOS.Boot()
+}
+
+func TestClockInterruptMeetIO(t *testing.T) {
+	shamOS := NewOS()
+	shamOS.Scheduler = FCFSScheduler{}
+
+	shamOS.CreateProcess("processMixItr", 10, 1, func(contextual *Contextual) int {
+		chanOutput := make(chan interface{}, 10)
+
+		switch {
+		case contextual.PC <= 9:
+			log.WithField("PC", contextual.PC).Debug("waiting...")
+			return StatusRunning
+		case contextual.PC == 10:
+			chanOutput <- "output something just before clock interrupt"
+			contextual.OS.InterruptRequest(contextual.Process.Thread, StdOutInterrupt, chanOutput)
+			return StatusRunning
+		case contextual.PC == 11:
+			chanOutput <- "output something just after clock interrupt"
+			contextual.OS.InterruptRequest(contextual.Process.Thread, StdOutInterrupt, chanOutput)
+			return StatusDone
 		}
 		return StatusDone
 	})

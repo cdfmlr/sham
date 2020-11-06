@@ -27,9 +27,12 @@ type OS struct {
 // 包含一个 Noop 的进程表以及默认的 NoScheduler 调度器。
 func NewOS() *OS {
 	return &OS{
-		CPU:          CPU{},
-		Mem:          Memory{},
-		Devs:         map[string]Device{},
+		CPU: CPU{},
+		Mem: Memory{},
+		Devs: map[string]Device{
+			"stdout": NewStdOut(),
+			"stdin":  NewStdIn(),
+		},
 		ReadyProcs:   []*Process{&Noop},
 		BlockedProcs: []*Process{},
 		Scheduler:    NoScheduler{},
@@ -65,18 +68,12 @@ func (os *OS) HandleInterrupts() {
 	}
 }
 
-func HandleClockInterrupt(os *OS, data InterruptData) {
-	os.BlockedToReady(data.Pid)
-}
-
 /********* 👇 SYSTEM CALLS 👇 ***************/
-
-// TODO: interrupt: a set of system-call-like stuffs
 
 // OSInterface 是操作系统暴露出来的「系统调用」接口
 type OSInterface interface {
 	CreateProcess(pid string, precedence uint, timeCost uint, runnable Runnable)
-	InterruptRequest(thread *Thread, typ string, data interface{})
+	InterruptRequest(thread *Thread, typ string, channel chan interface{})
 
 	// 这个只是模拟的内部需要，不是真正意义上的系统调用。
 	clockTick()
@@ -115,13 +112,14 @@ func (os *OS) CreateProcess(pid string, precedence uint, timeCost uint, runnable
 	os.ReadyProcs = append(os.ReadyProcs, &p)
 }
 
-func (os *OS) InterruptRequest(thread *Thread, typ string, data interface{}) {
+/// InterruptRequest 发出中断请求，阻塞当前进程
+func (os *OS) InterruptRequest(thread *Thread, typ string, channel chan interface{}) {
 	log.WithFields(log.Fields{
-		"thread": thread,
-		"type":   typ,
-		"data":   data,
+		"thread":  thread,
+		"type":    typ,
+		"channel": channel,
 	}).Info("[OS] InterruptRequest")
-	i := GetInterrupt(thread.contextual.Process.Id, typ, data)
+	i := GetInterrupt(thread.contextual.Process.Id, typ, channel)
 	os.Interrupts = append(os.Interrupts, i)
 	os.CPU.Cancel(StatusBlocked)
 }
@@ -131,8 +129,10 @@ func (os *OS) InterruptRequest(thread *Thread, typ string, data interface{}) {
 func (os *OS) clockTick() {
 	os.CPU.Clock += 1
 	time.Sleep(time.Second)
-	if os.CPU.Clock%10 == 0 { // 时钟中断
-		os.InterruptRequest(os.RunningProc.Thread, ClockInterrupt, os.RunningProc)
+	if os.CPU.Clock%10 == 0 && os.RunningProc.Status == StatusRunning { // 时钟中断
+		ch := make(chan interface{}, 1) // buffer 很重要！
+		os.InterruptRequest(os.RunningProc.Thread, ClockInterrupt, ch)
+		ch <- os.RunningProc
 		os.CPU.Clock = 0
 	}
 }
@@ -214,7 +214,7 @@ func (os *OS) BlockedToReady(pid string) {
 	}
 
 	if key == -1 {
-		log.WithField("pid", pid).Info("[OS] BlockedToReady Failed: No such Blocked Process")
+		log.WithField("pid", pid).Warn("[OS] BlockedToReady Failed: No such Blocked Process")
 		return
 	}
 	log.WithField("process", os.BlockedProcs[key]).Info("[OS] BlockedToReady")
