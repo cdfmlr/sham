@@ -74,6 +74,7 @@ func (os *OS) HandleInterrupts() {
 type OSInterface interface {
 	CreateProcess(pid string, precedence uint, timeCost uint, runnable Runnable)
 	InterruptRequest(thread *Thread, typ string, channel chan interface{})
+	FindProcess(pid string) *Process
 
 	// 这个只是模拟的内部需要，不是真正意义上的系统调用。
 	clockTick()
@@ -86,7 +87,7 @@ func (os *OS) CreateProcess(pid string, precedence uint, timeCost uint, runnable
 	p := Process{
 		Id:         pid,
 		Precedence: precedence,
-		Devices:    map[string]*Device{},
+		Devices:    map[string]Device{},
 	}
 
 	// init mem
@@ -122,6 +123,22 @@ func (os *OS) InterruptRequest(thread *Thread, typ string, channel chan interfac
 	i := GetInterrupt(thread.contextual.Process.Id, typ, channel)
 	os.Interrupts = append(os.Interrupts, i)
 	os.CPU.Cancel(StatusBlocked)
+}
+
+// FindProcess 通过 pid 获取一个进程
+func (os *OS) FindProcess(pid string) *Process {
+	os.ProcsMutex.Lock()
+	defer os.ProcsMutex.Unlock()
+
+	if pid == os.RunningProc.Id {
+		return os.RunningProc
+	}
+	for _, p := range append(os.ReadyProcs, os.BlockedProcs...) {
+		if p.Id == pid {
+			return p
+		}
+	}
+	return nil
 }
 
 // clockTick 时钟增长

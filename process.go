@@ -66,7 +66,7 @@ type Process struct {
 	Precedence uint
 	Thread     *Thread
 	Memory     Memory
-	Devices    map[string]*Device
+	Devices    map[string]Device
 	// Status 状态：one of -1, 0, 1, 2 分别代表 阻塞，就绪，运行，已结束
 	Status int
 }
@@ -97,6 +97,73 @@ func (c *Contextual) Commit() {
 	}
 }
 
+// 👇VAR POOL👇
+// 由于放变量是最常用的使用内存的方式，所以这里提供一组方法来方便变量的使用。
+// 这里所谓的变量池是放在 Process.Memory[0] 的一个 map[string]interface{}
+
+// InitVarPool 把 Contextual.Process.Memory[0] 开辟为变量池
+func (c *Contextual) InitVarPool() bool {
+	if c.Process != nil {
+		mem := &c.Process.Memory[0]
+		if mem.Content == nil {
+			mem.Content = map[string]interface{}{}
+			return true
+		}
+	}
+	return false
+}
+
+// GetVar 获取一个名为 name 的变量
+func (c *Contextual) GetVar(name string) interface{} {
+	mem := &c.Process.Memory[0]
+	if _, ok := mem.Content.(map[string]interface{}); !ok {
+		log.WithFields(log.Fields{
+			"targetVarName": name,
+			"mem":           c.Process.Memory,
+		}).Error("[CTX] GetVar Failed: mem[0] is not a VarPool")
+		return nil
+	}
+
+	if c.Process != nil {
+		return mem.Content.(map[string]interface{})[name]
+	}
+	return nil
+}
+
+// TryGetVar 获取一个名为 name 的变量。类似于 GetVar，但如果不成功会返回 nil, false
+func (c *Contextual) TryGetVar(name string) (interface{}, bool) {
+	mem := &c.Process.Memory[0]
+	if _, ok := mem.Content.(map[string]interface{}); !ok {
+		log.WithFields(log.Fields{
+			"targetVarName": name,
+			"mem":           c.Process.Memory,
+		}).Error("[CTX] GetVar Failed: mem[0] is not a VarPool")
+		return nil, false
+	}
+
+	if c.Process != nil {
+		v, ok := mem.Content.(map[string]interface{})[name]
+		return v, ok
+	}
+	return nil, false
+}
+
+// SetVar 为名为 name 的变量赋值，不存在会新建，存在会复写
+func (c *Contextual) SetVar(name string, value interface{}) bool {
+	mem := &c.Process.Memory[0]
+	if _, ok := mem.Content.(map[string]interface{}); !ok {
+		log.WithFields(log.Fields{
+			"targetVarName": name,
+			"mem":           c.Process.Memory,
+		}).Error("[CTX] GetVar Failed: mem[0] is not a VarPool")
+		return false
+	}
+	mem.Content.(map[string]interface{})[name] = value
+	return true
+}
+
+// 👆VAR POOL👆
+
 // Noop 是一个基本的进程，运行时会使用 fmt.Println 打印 "no-op"。
 // 这个东西不需要 IO 设备，不需要内存。
 // 运行需要的时间是 0，优先级为最低 (0)。
@@ -112,7 +179,7 @@ var Noop = Process{
 		remainingTime: 0,
 	},
 	Memory:  Memory{},
-	Devices: map[string]*Device{},
+	Devices: map[string]Device{},
 }
 
 func init() {

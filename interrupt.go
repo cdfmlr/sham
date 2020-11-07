@@ -25,16 +25,22 @@ type InterruptHandler func(os *OS, data InterruptData)
 
 // 所有支持的中断类型
 const (
-	ClockInterrupt  = "ClockInterrupt"
-	StdOutInterrupt = "StdOutInterrupt"
-	StdInInterrupt  = "StdInInterrupt"
+	ClockInterrupt       = "ClockInterrupt"
+	StdOutInterrupt      = "StdOutInterrupt"
+	StdInInterrupt       = "StdInInterrupt"
+	NewPipeInterrupt     = "NewPipeInterrupt"
+	GetPipeInterrupt     = "GetPipeInterrupt"
+	DestroyPipeInterrupt = "DestroyPipeInterrupt"
 )
 
 // 中断类型与中断处理程序的映射
 var interrupts = map[string]InterruptHandler{
-	ClockInterrupt:  HandleClockInterrupt,
-	StdOutInterrupt: HandleStdOutInterrupt,
-	StdInInterrupt:  HandleStdInInterrupt,
+	ClockInterrupt:       HandleClockInterrupt,
+	StdOutInterrupt:      HandleStdOutInterrupt,
+	StdInInterrupt:       HandleStdInInterrupt,
+	NewPipeInterrupt:     HandleNewPipeInterrupt,
+	GetPipeInterrupt:     HandleGetPipeInterrupt,
+	DestroyPipeInterrupt: HandleDestroyPipeInterrupt,
 }
 
 // GetInterrupt 获取中断 —— Interrupt 对象
@@ -75,5 +81,79 @@ func HandleStdInInterrupt(os *OS, data InterruptData) {
 	//data.Channel <- a
 	data.Channel <- <-os.Devs["stdin"].Input()
 	//log.Debug("sent")
+	os.BlockedToReady(data.Pid)
+}
+
+// HandleNewPipeInterrupt 新建一个 Pipe 设备，并分配给发起中断的进程
+// data.Channel 中应该是 [pipeId, pipeBufferSize]，顺序必须正确
+func HandleNewPipeInterrupt(os *OS, data InterruptData) {
+	pipeId, ok := (<-data.Channel).(string)
+	if !ok {
+		log.Error("[INT] Handle NewPipeInterrupt: Arg 0 from data.Channel cannot be used as pipeId")
+		return
+	}
+	pipeBufferSize, ok := (<-data.Channel).(int)
+	if !ok {
+		log.Error("[INT]  Handle NewPipeInterrupt: Arg 1 from data.Channel cannot be used as pipeBufferSize")
+		return
+	}
+
+	log.WithFields(log.Fields{
+		"pid":        data.Pid,
+		"pipeId":     pipeId,
+		"bufferSize": pipeBufferSize,
+	}).Info("[INT] Handle NewPipeInterrupt: create a new Pipe device")
+
+	pipe := NewPipe(pipeId, pipeBufferSize)
+	os.Devs[pipeId] = pipe
+
+	if p := os.FindProcess(data.Pid); p != nil {
+		p.Devices[pipeId] = pipe
+	}
+
+	os.BlockedToReady(data.Pid)
+}
+
+// HandleGetPipeInterrupt 获取一个 Pipe 设备，分配给发起中断的进程
+// data.Channel 中应该是 pipeId
+func HandleGetPipeInterrupt(os *OS, data InterruptData) {
+	pipeId, ok := (<-data.Channel).(string)
+	if !ok {
+		log.Error("[INT] Handle GetPipeInterrupt: Arg 0 from data.Channel cannot be used as pipeId")
+		return
+	}
+	pipe, ok := os.Devs[pipeId]
+	if !ok {
+		log.WithField("pipeId", pipeId).Error("[INT] Handle GetPipeInterrupt: no such pipe device")
+		return
+	}
+
+	if proc := os.FindProcess(data.Pid); proc != nil {
+		log.WithFields(log.Fields{
+			"proc": proc.Id,
+			"pipe": pipe,
+		}).Info("[INT] Handle GetPipeInterrupt: success")
+
+		proc.Devices[pipeId] = pipe
+	}
+
+	os.BlockedToReady(data.Pid)
+}
+
+// HandleDestroyPipeInterrupt 将一个 Pipe 设备从 os.Devs 中移除
+// data.Channel 中应该是 pipeId
+func HandleDestroyPipeInterrupt(os *OS, data InterruptData) {
+	pipeId, ok := (<-data.Channel).(string)
+	if !ok {
+		log.Error("[INT] Handle DestroyPipeInterrupt: Arg 0 from data.Channel cannot be used as pipeId")
+		return
+	}
+
+	log.WithFields(log.Fields{
+		"pipeId": pipeId,
+	}).Info("[INT] Handle DestroyPipeInterrupt")
+
+	delete(os.Devs, pipeId)
+
 	os.BlockedToReady(data.Pid)
 }

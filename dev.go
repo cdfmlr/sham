@@ -11,6 +11,7 @@ import (
 // Device 是模拟的「IO设备」的接口
 // 调用其 Input() 或 Output() 方法获取通信用的 chan
 type Device interface {
+	GetId() string
 	Input() chan interface{}
 	Output() chan interface{}
 }
@@ -28,14 +29,19 @@ type device struct {
 }
 
 // Input 获取设备的输入信道
+func (d *device) GetId() string {
+	return d.Id
+}
+
+// Input 获取设备的输入信道
 func (d *device) Input() chan interface{} {
-	log.WithField("device", d.Id).Info("[Device] get input")
+	log.WithField("device", d.Id).Info("[Device] input")
 	return d.input
 }
 
 // Output 获取设备的输出信道
 func (d *device) Output() chan interface{} {
-	log.WithField("device", d.Id).Info("[Device] get output")
+	log.WithField("device", d.Id).Info("[Device] output")
 	return d.output
 }
 
@@ -110,4 +116,66 @@ func NewStdIn() *StdIn {
 		}
 	}()
 	return s
+}
+
+// Pipe 管道，是一个很类似与 golang 的 chan 的东西（实际的实现上，他就是对一个 chan 的包装）。
+// 使用方法：
+// 发送：
+// 1. 某线程发出中断，申请操作系统建立一个 Pipe
+// 2. 操作系统新建一个 Pipe，放到自己的 Devs 里，同时也给申请者的 Devices 里加上这个 Pipe
+// 3. 线程从 Devices 里取 pipe，并给 pipe.Input() 发东西
+// 接收：
+// 1. 一个线程像操作系统发出中断，申请使用一个已有 Pipe
+// 2. 操作系统在 Devs 里找，找到了就给申请者的 Devices 里加上目标 Pipe
+// 3. 线程从 Devices 里取 pipe，并从 pipe.Output() 读东西
+type Pipe struct {
+	device
+	buffer chan interface{}
+	size   int
+	used   int
+}
+
+func NewPipe(id string, bufferSize int) *Pipe {
+	p := &Pipe{}
+
+	p.Id = id
+	p.size = bufferSize
+
+	p.buffer = make(chan interface{}, bufferSize)
+
+	p.input = p.buffer
+	p.output = p.buffer
+
+	return p
+}
+
+func (p *Pipe) Input() chan interface{} {
+	p.Lock()
+	defer p.Unlock()
+
+	p.used += 1
+
+	return p.input
+}
+func (p *Pipe) Output() chan interface{} {
+	p.Lock()
+	defer p.Unlock()
+
+	p.used -= 1
+
+	return p.output
+}
+
+func (p *Pipe) Inputable() bool {
+	p.Lock()
+	defer p.Unlock()
+
+	return p.used < p.size
+}
+
+func (p *Pipe) Outputable() bool {
+	p.Lock()
+	defer p.Unlock()
+
+	return p.used > 0
 }
