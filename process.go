@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// Runnable 程序：应用程序的具体的代码就写在这里面
+// 每一次返回就代表“一条指令”（一个原子操作）执行完毕，返回值为状态：
+//  - StatusRunning 继续运行（如果时间片未用尽）
+//  - StatusReady 会进入就绪队列（即 yield，主动让出 CPU）
+//  - StatusBlocked 会进入阻塞状态（无法恢复，所以一般不用。需要阻塞时一般通过中断请求）
+//  - StatusDone 进程运行结束。
 type Runnable func(contextual *Contextual) int
 
 // Thread 线程：是一个可以在 CPU 里跑的东西。
@@ -21,7 +27,7 @@ type Thread struct {
 
 // Run 包装并运行 Thread 的 runnable。
 // 该函数返回的 done、cancel 让 runnable 变得可控：
-// - 当 runnable 返回，即 Thread 结束时，done 会接收到 Thread 所属的 Pid 的 string。
+// - 当 runnable 返回，即 Thread 结束时，done 会接收到 Process/Thread 的状态。
 // - 当外部需要强制终止 runnable 的运行（调度），调用 cancel() 即可。
 func (t *Thread) Run() (done chan int, cancel context.CancelFunc) {
 	done = make(chan int)
@@ -31,7 +37,11 @@ func (t *Thread) Run() (done chan int, cancel context.CancelFunc) {
 	go func() {
 		for { // 一条条代码不停跑，直到阻塞｜退出｜被取消
 			select {
-			case <-_ctx.Done():
+			case <-_ctx.Done(): // 被取消，取消由 CPU 发起
+				// 取消时 CPU 会临时置 Status 为需要转到的状态，
+				// 这里获取并把这个值传给操作系统
+				// 同时把状态重置为 StatusRunning
+				// （真正的状态转化需由操作系统完成，这里只是暂时借用了这个值，故要还原）
 				log.WithField("process", t.contextual.Process).Info("Thread Run Cancel")
 				s := t.contextual.Process.Status
 				t.contextual.Process.Status = StatusRunning
@@ -51,7 +61,8 @@ func (t *Thread) Run() (done chan int, cancel context.CancelFunc) {
 	return done, cancel
 }
 
-var (
+// 进程的状态
+const (
 	StatusBlocked = -1
 	StatusReady   = 0
 	StatusRunning = 1

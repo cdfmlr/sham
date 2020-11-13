@@ -503,7 +503,7 @@ func TestVarPool(t *testing.T) {
 }
 
 func TestProducerConsumer(t *testing.T) {
-	//log.SetLevel(log.ErrorLevel)  // 只看标准输出
+	// log.SetLevel(log.ErrorLevel)  // 只看标准输出
 
 	shamOS := NewOS()
 	shamOS.Scheduler = FCFSScheduler{}
