@@ -244,6 +244,290 @@ func helloWorld(contextual *Contextual) int {
 
 ![截屏2020-11-13 12.07.16](https://tva1.sinaimg.cn/large/0081Kckwly1gknf17o30tj31jj0u0hbm.jpg)
 
+## Sham Programming
+
+在 Sham 源码的 [sham_test.go](https://github.com/cdfmlr/sham/blob/master/sham_test.go) 文件中，包含了一系列开发过程中测试使用的应用程序实现，其中的很多都可以当作 Sham 程序设计的官方实例。如果您阅读那些代码有困难，请阅读下文：
+
+### 如何运行 Sham?
+
+```go
+shamOS := NewOS()
+shamOS.Scheduler = FCFSScheduler{}
+// shamOS.ReadyProcs = []*Process{} // No Noop
+
+shamOS.CreateProcess(...)
+shamOS.CreateProcess(...)
+...
+
+shamOS.Boot()
+```
+
+获取一个 OS 实例，指定调度器（FCFSScheduler 是先来先服务算法），添加应用程序进程，然后 Boot 就开始运行了！
+
+系统的就绪队列中默认有一个 Noop（NO OPeration）进程，这个进程什么也不做。如果不需要，可以参考被注释掉的第三行代码删除它。
+
+调用 `shamOS.CreateProcess` 可以给系统中新建进程，新的进程会被正确初始化，并放入就绪队列等待运行：
+
+```go
+func (os *OS) CreateProcess(pid string, precedence uint, timeCost uint, runnable Runnable)
+```
+
+precedence 和 timeCost 是给留特定的调度算法使用的，如果使用 FCFSScheduler 就没什么用，随便写即可，runnable 就是具体的程序代码了，下面就介绍 runnable 的写法。
+
+### 顺序程序
+
+```go
+func processSeq(contextual *Contextual) int {
+    switch contextual.PC {
+    case 0:
+        log.Debug("Line 0")
+        return StatusRunning
+    case 1:
+        log.Debug("Line 1")
+        return StatusRunning
+    case 2:
+        log.Debug("Line 2")
+        return StatusRunning
+    case 3:
+        return StatusDone
+    }
+    return StatusDone
+}
+```
+
+借助 `switch contextual.PC` 和 `return StatusRunning` 一个时钟执行一个操作。当程序结束时，`return StatusDone`。
+
+注：这里是调用了 log（github.com/sirupsen/logrus，打一条日志），这其实是个「超系统调用」，调用了 sham 以外的东西。作为测试，这没问题。
+
+### 系统调用
+
+如果你对刚才的「超系统调用」感觉不爽，那没关系，下面就介绍 Sham 的系统调用。其实之前我们使用的 `CreateProcess` 就是一个系统调用：
+
+- `CreateProcess(pid string, precedence uint, timeCost uint, runnable Runnable)`
+
+```go
+shamOS.CreateProcess("processFoo", 10, 1, func(contextual *Contextual) int {
+    contextual.OS.CreateProcess("ProcessBar", 10, 0, func(contextual *Contextual) int {
+        fmt.Println("ProcessBar, a Process dynamic created by processFoo")
+        return StatusDone
+    })
+    return StatusDone
+})
+```
+
+我们使用 `contextual.OS.XXX` 完成系统调用。这里 processFoo 调用 `CreateProcess` 新建了一个进程 ProcessBar。 
+
+还有一个更有用的系统调用——中断请求：
+
+- `InterruptRequest(thread *Thread, typ string, channel chan interface{})`
+
+thread 是发起中断的进程，一般是当前线程自己： `contextual.Process.Thread` ，typ 是要调用的中断类型，channel 是当前线程与中断处理程序直接通信的。
+
+由于当前线程与中断处理程序显然不同步，channel 必须是带缓冲区的！
+
+```go
+func helloWorld(contextual *Contextual) int {
+    ch := make(chan interface{}, 1)
+    ch <- "Hello, world!"
+    contextual.OS.InterruptRequest(contextual.Process.Thread, 
+                                   StdOutInterrupt, ch)
+    return StatusDone
+}
+```
+
+目前可用的中断类型有：
+
+| typ                | 说明               | channel                           |
+| ------------------ | ------------------ | --------------------------------- |
+| `StdOutInterrupt`  | 输出到标准输出     | 放入药输出的东西                  |
+| `StdInInterrupt`   | 从标准输入获取输入 | 一个空 chan，标准输入会写东西进去 |
+| `NewPipeInterrupt` | 新建一个 Pipe 设备 | 放入 pipeID 和 pipeBufferSize     |
+| `GetPipeInterrupt` | 获取一个 Pipe 设备 | 放入 pipeID                       |
+
+关于 Pipe 后面再详细介绍。
+
+使用标准输入时，需要注意，把 chan 放到 sham 线程的内存中，而不是使用一个 go 变量：
+
+```go
+shamOS.CreateProcess("processIn", 10, 1, func(contextual *Contextual) int {
+    mem := &contextual.Process.Memory[0]
+
+    switch contextual.PC {
+    case 0:
+        in := make(chan interface{}, 1)
+        // in 会在多个周期中被使用，需要放入内存
+        mem.Content = map[string]chan interface{}{"in": in}
+        contextual.OS.InterruptRequest(contextual.Process.Thread, 
+                                       StdInInterrupt, in)
+        return StatusRunning
+    case 1:
+        in := mem.Content.(map[string]chan interface{})["in"]
+
+        content := <-in
+        log.WithField("content", content).Debug("got content")
+
+        return StatusDone
+    }
+
+    return StatusDone
+})
+```
+
+### 变量使用
+
+程序中当然是需要使用变量的。但从刚才的标准输出程序可以看到，使用 sham 的内存极为麻烦！而那些从内存读写变量的操作非常套路化，所以我封装了一个 `VarPool` 来方便变量读写：
+
+```go
+contextual.InitVarPool()  // 初始化变量池
+contextual.SetVar("varName", something)  // 放入（新建或更新）变量
+something := contextual.GetVar("varName")  // 读取变量，如果不存在会得到 nil
+something, ok := contextual.TryGetVar("varName")  // 读取变量，ok指使变量是否存在
+```
+
+E.g.
+
+```go
+shamOS.CreateProcess("useVarPool", 1, 1, func(contextual *Contextual) int {
+    switch {
+    case contextual.PC == 0:
+        contextual.InitVarPool()
+        
+        contextual.SetVar("chOutput", make(chan interface{}, 1))
+
+        return StatusRunning
+    case contextual.PC <= 3:
+        contextual.SetVar("num", contextual.PC*contextual.PC)
+
+        chOut := contextual.GetVar("chOutput").(chan interface{})
+        
+        chOut <- fmt.Sprintln(contextual.GetVar("num"), chOut)
+        contextual.OS.InterruptRequest(contextual.Process.Thread, StdOutInterrupt, chOut)
+
+        return StatusRunning
+    }
+    return StatusDone
+})
+```
+
+### 条件/循环
+
+条件、循环这里做的不太好，比较麻烦。需要大家手动维护额外的程序计数器：
+
+```go
+const PipeProduct = "pipe_product"
+
+shamOS.CreateProcess("producer", 10, 100, func(contextual *Contextual) int {
+    switch contextual.PC {
+    case 0:
+        contextual.InitVarPool()
+        contextual.SetVar("chOutput", make(chan interface{}, 1))
+
+        return StatusRunning
+    case 1:
+        pipeArgs := make(chan interface{}, 2)
+        pipeArgs <- PipeProduct // pipeId
+        pipeArgs <- 3           // pipeBufferSize
+        contextual.OS.InterruptRequest(contextual.Process.Thread, 
+                                       NewPipeInterrupt, pipeArgs)
+
+        return StatusRunning
+    default:
+        if contextual.PC > 30 {
+            return StatusDone
+        }
+
+        _, ok := contextual.TryGetVar("dpc")
+        if !ok {
+            contextual.SetVar("dpc", 0)
+        }
+        dpc := contextual.GetVar("dpc").(int)
+
+        switch dpc {
+        case 0:
+            product := contextual.PC
+
+            contextual.SetVar("product", product)
+
+            contextual.SetVar("dpc", 1)
+            return StatusRunning
+        default:
+            pipe := interface{}(
+                contextual.Process.Devices[PipeProduct]).(*Pipe)
+
+            if pipe.Inputable() {
+                product := contextual.GetVar("product")
+
+                pipe.Input() <- product
+
+                contextual.SetVar("dpc", 0)
+            } else {
+                return StatusReady // yield
+            }
+        }
+
+        return StatusRunning
+    }
+})
+```
+
+这段代码是生产者消费者问题中的生产者线程，我们通过一个 `dpc` 变量实现了类似于 `JMP` 指令的跳转功能。
+
+这段代码中关于 Pipe 不太好理解，所以下面介绍 Pipe。
+
+### 进程通信: Pipe
+
+Pipe 是 Sham 中的一种特殊 IO 设备，它是对 Golang chan 的封装，它提供了 Sham 进程间通信的能力。
+
+创建 Pipe：
+
+```go
+pipeArgs := make(chan interface{}, 2)
+pipeArgs <- "pipeID"  // pipeId
+pipeArgs <- 3         // pipeBufferSize
+contextual.OS.InterruptRequest(contextual.Process.Thread, 
+                               NewPipeInterrupt, pipeArgs)
+```
+
+其他进程获取 Pipe：
+
+```go
+pipeArgs := make(chan interface{}, 2)
+pipeArgs <- "pipeID" // pipeId
+
+contextual.OS.InterruptRequest(contextual.Process.Thread, 
+                               GetPipeInterrupt, pipeArgs)
+```
+
+`NewPipeInterrupt` 和 `GetPipeInterrupt` 中断请求被成功处理之后，操作系统会把新建的/获取到的 Pipe 分配给进程，通过 contextual 可以获取：`contextual.Process.Devices["pipeID"]`。我们会获取到一个 Device 类型的东西，为了具体使用时方便，我们需要把它转化为 *Pipe 类型：
+
+```go
+pipe := interface{}(contextual.Process.Devices[PipeProduct]).(*Pipe)
+```
+
+在读写 Pipe 的时候需要注意边界条件，不可读时强行去读会造成死锁。
+
+写：在 `pipe.Inputable()` 时 `pipe.Input() <- something`，否则说明阻塞，主动让出 CPU：
+
+```go
+if pipe.Inputable() {
+    pipe.Input() <- contextual.GetVar("product")
+} else {
+    return StatusReady // yield
+}
+```
+
+读也是类似的，检测—读取—否则让出 CPU：
+
+```go
+if pipe.Outputable() {
+    contextual.SetVar("product", <-pipe.Output())
+} else {
+    return StatusReady // yield
+}
+```
+
+
+
 ## TODO
 
 - [ ] More scheduler (different kinks of algorithms)
